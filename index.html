@@ -159,6 +159,15 @@ input,select,textarea{font-family:inherit;color:inherit}
 .para-note{width:100%;font-family:var(--sans);font-size:13px;line-height:1.6;color:var(--ink);background:transparent;border:1px dashed var(--line);border-radius:8px;padding:6px 10px;outline:none;resize:vertical;min-height:38px;margin-top:4px;transition:border .2s}
 .para-note:focus{border-color:var(--accent)}
 .para-note::placeholder{color:var(--ink-3);font-style:italic}
+mark.hl{background:linear-gradient(transparent 52%, #ffe27a 48%);color:inherit;padding:0 2px;border-radius:3px;cursor:pointer;transition:background .15s}
+mark.hl:hover{background:linear-gradient(transparent 38%, #ffd54a 62%)}
+[data-theme="dark"] mark.hl{background:linear-gradient(transparent 52%, rgba(212,160,23,.40) 48%);color:#fff}
+[data-theme="dark"] mark.hl:hover{background:linear-gradient(transparent 38%, rgba(212,160,23,.55) 62%)}
+.hl-toolbar{position:fixed;z-index:90;background:var(--surface);border:1px solid var(--line);border-radius:10px;box-shadow:var(--shadow-lg);padding:4px;display:none;gap:4px}
+.hl-toolbar.show{display:flex}
+.hl-toolbar button{font-size:12px;font-weight:600;padding:6px 10px;border-radius:7px;color:var(--ink-2);white-space:nowrap;transition:all .15s}
+.hl-toolbar button:hover{background:var(--surface-2);color:var(--ink)}
+.hl-toolbar button.hl-add{color:#8a6d1a}
 
 .blk[data-bt]{cursor:pointer}
 .blk.blurred .btext{filter:blur(7px);user-select:none;pointer-events:none}
@@ -268,6 +277,8 @@ input,select,textarea{font-family:inherit;color:inherit}
       <div class="side-stat"><span>已掌握</span><b id="statMastered">0 / 0</b></div>
       <div class="side-stat"><span>已收藏</span><b id="statFavs">0</b></div>
       <div class="side-stat"><span>今日已复习</span><b id="statToday">0 条</b></div>
+      <div class="side-stat"><span>荧光标记</span><b id="statHl">0 处</b></div>
+      <button class="btn-reset" id="btnClearHl">清除荧光标记</button>
       <button class="btn-reset" id="btnReset">清除当前科目学习进度</button>
     </div>
   </aside>
@@ -317,6 +328,7 @@ input,select,textarea{font-family:inherit;color:inherit}
 <div class="modal" id="randomModal"><div class="modal-backdrop" data-close="randomModal"></div><div class="modal-card" id="randomCard"></div></div>
 <div class="modal" id="shareModal"><div class="modal-backdrop" data-close="shareModal"></div><div class="modal-card" id="shareCard"></div></div>
 <input type="file" id="importFile" accept=".json,application/json" style="display:none">
+<div class="hl-toolbar" id="hlToolbar"><button class="hl-add" id="hlAdd">🖍 荧光标记</button><button id="hlCancel">取消</button></div>
 <div class="toast" id="toast"></div>
 
 <script>
@@ -339,6 +351,17 @@ function allItems(){ const r=[]; DATA.forEach(c=>c.items.forEach(it=>r.push(Obje
 function findItem(id){ return allItems().find(w=>w.id===id); }
 function isEnWord(title){ return /^[A-Za-z]/.test(title); }
 function isRecallable(it){ return it.blocks.some(b=>b.k==='en'||b.k==='ex'); }
+function hlFor(itemId, bi){ const m = S.hl[itemId]; return (m && m[bi]) ? m[bi] : null; }
+function escRe(s){ return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'); }
+function hlText(text, phrases){
+  if(!Array.isArray(phrases) || !phrases.length) return esc(text);
+  const s = esc(text);
+  const ps = phrases.map(p=>esc(p)).filter(Boolean).sort((a,b)=>b.length-a.length);
+  if(!ps.length) return s;
+  const re = new RegExp(ps.map(escRe).join('|'), 'g');
+  return s.replace(re, m => '<mark class="hl" title="点击取消荧光">'+m+'</mark>');
+}
+function totalHl(){ let n=0; for(const id in S.hl){ const m=S.hl[id]; for(const bi in m){ n += m[bi].length; } } return n; }
 
 /* ================= 常量 ================= */
 const INTERVALS = {1:1, 2:3, 3:7, 4:14};
@@ -350,7 +373,7 @@ function todayStr(){ const d=new Date(); return d.getFullYear()+'-'+String(d.get
 function addDays(n){ const d=new Date(); d.setDate(d.getDate()+n); return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0'); }
 
 let theme = localStorage.getItem('beisong_theme') || 'light';
-let S = { srs:{}, favs:new Set(), notes:{}, dailyNew:5, daily:{date:'',done:0} };
+let S = { srs:{}, favs:new Set(), notes:{}, hl:{}, dailyNew:5, daily:{date:'',done:0} };
 const ui = { view:'browse', catId:'all', q:'', blur:'none',
   flashFilter:'all', flashIndex:0, flashFlipped:false,
   quizFilter:'unmastered', quizDeck:[], quizIndex:0, quizRevealed:false, session:{reviewed:0,mastered:0},
@@ -372,6 +395,7 @@ function loadState(){
     if(Object.keys(fen).length) notes = fen;
   }
   S.notes = notes;
+  S.hl = JSON.parse(localStorage.getItem(LS+'_hl')||'{}');
   S.dailyNew = parseInt(localStorage.getItem(LS+'_dailyNew')||'5',10);
   S.daily = JSON.parse(localStorage.getItem(LS+'_daily')||'{"date":"","done":0}');
   if(S.daily.date !== todayStr()) S.daily = {date:todayStr(), done:0};
@@ -379,6 +403,7 @@ function loadState(){
 function persistSrs(){ localStorage.setItem(LS+'_srs', JSON.stringify(S.srs)); }
 function persistFavs(){ localStorage.setItem(LS+'_favs', JSON.stringify([...S.favs])); }
 function persistNotes(){ localStorage.setItem(LS+'_notes', JSON.stringify(S.notes)); }
+function persistHl(){ localStorage.setItem(LS+'_hl', JSON.stringify(S.hl)); }
 
 function getSrs(id){ return S.srs[id] || {lvl:0, due:''}; }
 function isMastered(id){ return (S.srs[id]?.lvl ?? 0) >= 4; }
@@ -412,10 +437,10 @@ function renderContent(){
   renderBrowse();
 }
 
-function blockHTML(b){
-  if(b.k==='note') return `<div class="blk note"><span class="btag">${b.label}</span><p class="btext">${esc(b.text)}</p></div>`;
+function blockHTML(b, phrases){
+  if(b.k==='note') return `<div class="blk note"><span class="btag">${b.label}</span><p class="btext">${hlText(b.text, phrases)}</p></div>`;
   const cls = b.k==='ex' ? 'ex' : 'en';
-  return `<div class="blk ${cls}" data-bt="${b.k}"><span class="btag">${b.label}</span><p class="btext">${esc(b.text)}</p><button class="reveal">👁 点击显示</button></div>`;
+  return `<div class="blk ${cls}" data-bt="${b.k}"><span class="btag">${b.label}</span><p class="btext">${hlText(b.text, phrases)}</p><button class="reveal">👁 点击显示</button></div>`;
 }
 
 function cardHTML(it){
@@ -441,7 +466,7 @@ function cardHTML(it){
     </div>
     ${it.meta?`<div class="meta">${esc(it.meta)}</div>`:''}
     ${it.tags && it.tags.length?`<div class="tags">${it.tags.map(t=>`<span class="tagchip">${esc(t)}</span>`).join('')}</div>`:''}
-    ${it.blocks.map(blockHTML).join('')}
+    ${it.blocks.map((b,i)=>blockHTML(b, hlFor(it.id,i))).join('')}
     <textarea class="para-note" data-note="${it.id}" placeholder="${BOOKS[BOOK].noteLabel}">${esc(S.notes[it.id]||'')}</textarea>
   </article>`;
 }
@@ -541,6 +566,7 @@ function updateStats(){
     const el = $('#cnt-'+cat.id);
     if(el) el.textContent = `${c}/${cat.items.length}`;
   });
+  $('#statHl').textContent = totalHl() + ' 处';
   $('#pfill').style.width = (done/TOTAL*100)+'%';
 }
 
@@ -791,7 +817,7 @@ function renderShareCard(){
     </div>`;
 }
 function exportBackup(){
-  const data = {app:'考研背诵卡合集', book:BOOK, bookName:BOOKS[BOOK].name, version:1, exportedAt:new Date().toISOString(), srs:S.srs, favs:[...S.favs], notes:S.notes};
+  const data = {app:'考研背诵卡合集', book:BOOK, bookName:BOOKS[BOOK].name, version:1, exportedAt:new Date().toISOString(), srs:S.srs, favs:[...S.favs], notes:S.notes, hl:S.hl};
   const blob = new Blob([JSON.stringify(data,null,2)], {type:'application/json'});
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob); a.download = BOOKS[BOOK].name+'-备份.json'; a.click();
@@ -808,6 +834,7 @@ function importBackup(data){
   if(data.srs && typeof data.srs==='object') S.srs = data.srs;
   if(Array.isArray(data.favs)) S.favs = new Set(data.favs);
   if(data.notes && typeof data.notes==='object') S.notes = data.notes;
+  if(data.hl && typeof data.hl==='object') S.hl = data.hl;
   persistSrs(); persistFavs(); persistNotes();
   renderSidebar(); updateStats(); renderContent();
   toast('已导入备份 ✓');
@@ -868,7 +895,7 @@ function switchBook(key){
   DATA = BOOKS[key].data;
   LS = BOOKS[key].ls;
   TOTAL = DATA.reduce((s,c)=>s+c.items.length,0);
-  S = { srs:{}, favs:new Set(), notes:{}, dailyNew:5, daily:{date:'',done:0} };
+  S = { srs:{}, favs:new Set(), notes:{}, hl:{}, dailyNew:5, daily:{date:'',done:0} };
   loadState();
   localStorage.setItem('beisong_book', key);
   // reset transient per-book UI state
@@ -877,6 +904,7 @@ function switchBook(key){
   ui.quizDeck=[]; ui.quizIndex=0; ui.quizRevealed=false; ui.session={reviewed:0,mastered:0};
   ui.reviewQueue=[]; ui.reviewIndex=0; ui.reviewRevealed=false; ui.reviewStats={ok:0,no:0};
   ui.randomId=null; ui.randomRevealed=false;
+  hideHlToolbar();
   $('#searchInput').value = '';
   document.querySelectorAll('#bookSeg button').forEach(x=>x.classList.toggle('on', x.dataset.book===key));
   $('#brandSub').textContent = BOOKS[key].name + ' · ' + TOTAL + ' 条';
@@ -887,6 +915,8 @@ function switchBook(key){
 
 /* ================= 事件 ================= */
 content.addEventListener('click', e=>{
+  const mk = e.target.closest('mark.hl');
+  if(mk){ removeHighlight(mk); return; }
   const reveal = e.target.closest('.reveal');
   const blk = e.target.closest('.blk');
   if(reveal || (blk && blk.classList.contains('blurred'))){
@@ -934,6 +964,91 @@ content.addEventListener('click', e=>{
   if(fcard){ flashFlip(); return; }
 });
 
+/* ================= 荧光标记：选区工具栏 ================= */
+const hlToolbar = $('#hlToolbar');
+let hlSel = null;
+function nodeEl(n){ return n && n.nodeType===1 ? n : (n && n.parentElement); }
+function showHlToolbar(rect){
+  if(!rect) return;
+  const w = hlToolbar.offsetWidth || 130;
+  let x = rect.left + rect.width/2 - w/2;
+  let y = rect.top - 46;
+  if(y < 8) y = rect.bottom + 10;
+  x = Math.max(8, Math.min(x, window.innerWidth - w - 8));
+  hlToolbar.style.left = x + 'px';
+  hlToolbar.style.top = y + 'px';
+  hlToolbar.classList.add('show');
+}
+function hideHlToolbar(){ hlToolbar.classList.remove('show'); hlSel = null; }
+function handleSelection(){
+  hideHlToolbar();
+  if(ui.view !== 'browse') return;
+  const sel = window.getSelection();
+  if(!sel || sel.isCollapsed || sel.rangeCount < 1 || !sel.toString().trim()) return;
+  const range = sel.getRangeAt(0);
+  const sc = nodeEl(range.startContainer), ec = nodeEl(range.endContainer);
+  if(!sc || !ec) return;
+  const card = sc.closest('.card[data-id]');
+  if(!card || ec.closest('.card[data-id]') !== card) return;
+  const blkEl = sc.closest('.blk');
+  if(!blkEl) return;
+  const bi = Array.prototype.indexOf.call(card.querySelectorAll('.blk'), blkEl);
+  if(bi < 0) return;
+  hlSel = { itemId: card.dataset.id, blockIndex: bi };
+  showHlToolbar(range.getBoundingClientRect());
+}
+function addHighlight(){
+  if(!hlSel) return;
+  const sel = window.getSelection();
+  const phrase = sel ? sel.toString().trim() : '';
+  if(!phrase){ hideHlToolbar(); return; }
+  const { itemId, blockIndex } = hlSel;
+  if(!S.hl[itemId]) S.hl[itemId] = {};
+  if(!S.hl[itemId][blockIndex]) S.hl[itemId][blockIndex] = [];
+  if(!S.hl[itemId][blockIndex].includes(phrase)) S.hl[itemId][blockIndex].push(phrase);
+  persistHl();
+  if(sel) sel.removeAllRanges();
+  hideHlToolbar();
+  refreshCard(itemId);
+  updateStats();
+  toast('已荧光标记');
+}
+function removeHighlight(markEl){
+  const card = markEl.closest('.card[data-id]');
+  if(!card) return;
+  const blkEl = markEl.closest('.blk');
+  if(!blkEl) return;
+  const bi = Array.prototype.indexOf.call(card.querySelectorAll('.blk'), blkEl);
+  if(bi < 0) return;
+  const phrase = markEl.textContent;
+  const arr = S.hl[card.dataset.id] && S.hl[card.dataset.id][bi];
+  if(!arr) return;
+  const k = arr.indexOf(phrase);
+  if(k < 0) return;
+  arr.splice(k, 1);
+  if(!arr.length){ delete S.hl[card.dataset.id][bi]; if(!Object.keys(S.hl[card.dataset.id]).length) delete S.hl[card.dataset.id]; }
+  persistHl();
+  refreshCard(card.dataset.id);
+  updateStats();
+  toast('已取消标记');
+}
+function refreshCard(itemId){
+  const card = document.getElementById('card-'+itemId);
+  if(!card) return;
+  const it = findItem(itemId);
+  if(!it) return;
+  const tmp = document.createElement('div');
+  tmp.innerHTML = cardHTML(it);
+  const newCard = tmp.firstElementChild;
+  if(newCard) card.replaceWith(newCard);
+  applyBlur();
+}
+content.addEventListener('mouseup', e=>{
+  if(e.target.closest('mark.hl') || e.target.closest('.hl-toolbar')) return;
+  setTimeout(handleSelection, 0);
+});
+content.addEventListener('scroll', hideHlToolbar);
+
 content.addEventListener('input', e=>{
   if(e.target.classList.contains('para-note')){
     S.notes[e.target.dataset.note] = e.target.value;
@@ -963,6 +1078,7 @@ function setCat(id){
 }
 function setView(v){
   ui.view = v;
+  hideHlToolbar();
   $('#viewSeg').querySelectorAll('button').forEach(b=>b.classList.toggle('on', b.dataset.view===v));
   const titles = {
     browse:['总览', BOOKS[BOOK].sub + ' · ' + TOTAL + ' 条'],
@@ -999,6 +1115,8 @@ function applyTheme(){
 $('#themeBtn').addEventListener('click', toggleTheme);
 $('#randomBtn').addEventListener('click', openRandom);
 $('#shareBtn').addEventListener('click', ()=>{ renderShareCard(); $('#shareModal').classList.add('show'); });
+$('#hlAdd').addEventListener('click', addHighlight);
+$('#hlCancel').addEventListener('click', hideHlToolbar);
 
 document.addEventListener('click', e=>{
   const c = e.target.closest('[data-close]');
@@ -1034,12 +1152,19 @@ $('#importFile').addEventListener('change', e=>{
 });
 $('#btnReset').addEventListener('click', ()=>{
   if(confirm('确定清除「'+BOOKS[BOOK].name+'」的掌握、收藏和笔记记录吗？')){
-    S.srs = {}; S.favs.clear(); S.notes = {};
+    S.srs = {}; S.favs.clear(); S.notes = {}; S.hl = {};
     S.daily = {date:todayStr(), done:0};
-    persistSrs(); persistFavs(); persistNotes();
+    persistSrs(); persistFavs(); persistNotes(); persistHl();
     localStorage.setItem(LS+'_daily', JSON.stringify(S.daily));
     renderSidebar(); updateStats(); renderContent();
     toast('已清除「'+BOOKS[BOOK].name+'」学习进度');
+  }
+});
+$('#btnClearHl').addEventListener('click', ()=>{
+  if(confirm('确定清除「'+BOOKS[BOOK].name+'」的全部荧光标记吗？')){
+    S.hl = {}; persistHl();
+    renderContent(); updateStats();
+    toast('已清除荧光标记');
   }
 });
 function closeSidebar(){ $('#sidebar').classList.remove('open'); $('#overlay').classList.remove('show'); }
